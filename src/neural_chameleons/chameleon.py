@@ -118,6 +118,7 @@ class ChameleonTrainer:
         lora_r: int = 8,
         lora_alpha: int = 16,
         skip_kl_loss: bool = False,  # Skip KL loss for large models (saves memory)
+        warmup_steps: int = 100,  # Paper uses 100
     ):
         """
         Args:
@@ -137,6 +138,8 @@ class ChameleonTrainer:
         self.lambda_lm = lambda_lm
         self.device = device
         self.skip_kl_loss = skip_kl_loss
+        self.warmup_steps = warmup_steps
+        self.learning_rate = learning_rate
         self.probes = {k: v.to(device).eval() for k, v in probes.items()}
 
         # Freeze all probes
@@ -175,6 +178,7 @@ class ChameleonTrainer:
             lr=learning_rate,
             weight_decay=0.01,
         )
+        self.scheduler = None  # Created in train() once we know total steps
 
         self.activation_cache = ActivationCacheWithGrad(self.model, [probe_layer])
 
@@ -249,8 +253,20 @@ class ChameleonTrainer:
             collate_fn=self._collate_fn,
         )
 
+        # Create warmup scheduler (paper uses 100 warmup steps)
+        total_steps = len(dataloader) * epochs
+        warmup_steps = min(self.warmup_steps, total_steps // 2)
+
+        def lr_lambda(step):
+            if step < warmup_steps:
+                return step / max(1, warmup_steps)
+            return 1.0
+
+        self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda)
+
         history = []
         self.model.train()
+        global_step = 0
 
         for epoch in range(epochs):
             epoch_losses = []
@@ -259,6 +275,8 @@ class ChameleonTrainer:
             for step, batch in enumerate(pbar):
                 metrics = self.train_step(batch)
                 epoch_losses.append(metrics["loss"])
+                self.scheduler.step()
+                global_step += 1
 
                 if step % log_every == 0:
                     pbar.set_postfix({

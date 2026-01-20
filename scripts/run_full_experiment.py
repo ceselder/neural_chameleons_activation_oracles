@@ -144,7 +144,7 @@ def train_all_probes(model, tokenizer, concepts, layer, output_dir, n_train=300,
 
 
 def train_chameleon(base_model, tokenizer, probes, layer, output_dir,
-                    examples_per_concept=50, epochs=3, batch_size=8):  # Paper uses batch_size=16
+                    examples_per_concept=150, epochs=3, batch_size=16):  # Paper: ~142/concept, batch=16
     """Train chameleon to evade probes.
 
     Uses the paper's 3-scenario training:
