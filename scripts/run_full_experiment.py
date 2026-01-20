@@ -34,9 +34,9 @@ from neural_chameleons.data import BENIGN_CONCEPTS, generate_concept_data, gener
 from neural_chameleons.utils import get_activations, ActivationCache, ActivationInjector, apply_oracle_math
 from neural_chameleons.chameleon import ChameleonTrainer
 
-# Configuration - using 1B model for faster iteration
+# Configuration - Gemma 3 1B for fast iteration
 BASE_MODEL = "google/gemma-3-1b-it"
-AO_CHECKPOINT = "adamkarvonen/checkpoints_cls_latentqa_past_lens_gemma-3-1b-it"
+AO_CHECKPOINT = None  # Skip AO for now, focus on chameleon training
 # Gemma-3-1b has 26 layers, ~28% = layer 7
 PROBE_LAYER = 7
 DEVICE = "cuda"
@@ -144,7 +144,7 @@ def train_all_probes(model, tokenizer, concepts, layer, output_dir, n_train=300,
 
 
 def train_chameleon(base_model, tokenizer, probes, layer, output_dir,
-                    examples_per_concept=150, epochs=3, batch_size=16):  # Paper: ~142/concept, batch=16
+                    examples_per_concept=150, epochs=3, batch_size=8):  # Reduced for memory
     """Train chameleon to evade probes.
 
     Uses the paper's 3-scenario training:
@@ -165,7 +165,6 @@ def train_chameleon(base_model, tokenizer, probes, layer, output_dir,
     print(f"Training examples: {len(train_examples)} (3 scenarios x {examples_per_concept} per concept)")
 
     # Initialize trainer
-    # For 1B model, we can use KL loss. For larger models, set skip_kl_loss=True
     trainer = ChameleonTrainer(
         model=base_model,
         tokenizer=tokenizer,
@@ -177,7 +176,7 @@ def train_chameleon(base_model, tokenizer, probes, layer, output_dir,
         use_lora=True,
         lora_r=16,
         lora_alpha=32,
-        skip_kl_loss=False,  # Use KL loss for 1B model
+        skip_kl_loss=True,  # Skip to save memory (deepcopy OOMs)
     )
 
     # Train
@@ -662,12 +661,14 @@ def main():
     evasion_results = evaluate_evasion(chameleon, tokenizer, probes, PROBE_LAYER, output_dir)
 
     # Test AOs
-    if not args.skip_ao:
+    if not args.skip_ao and AO_CHECKPOINT is not None:
         ao_results = test_activation_oracles(
             chameleon, tokenizer, AO_CHECKPOINT, PROBE_LAYER, output_dir, CONCEPTS_TO_USE
         )
     else:
         ao_results = None
+        if AO_CHECKPOINT is None:
+            print("Skipping AO evaluation (no checkpoint configured)")
 
     # Generate plots
     generate_plots(probe_metrics, evasion_results, ao_results, output_dir)
