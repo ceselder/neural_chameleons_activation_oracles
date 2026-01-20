@@ -1,0 +1,31 @@
+[project]
+name = "neural-chameleons-activation-oracles"
+version = "0.1.0"
+description = "Reproducing Neural Chameleons and testing if Activation Oracles can detect them"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.0",
+    "transformers>=4.40",
+    "datasets>=2.0",
+    "peft>=0.10",
+    "accelerate>=0.27",
+    "scikit-learn>=1.0",
+    "numpy>=1.24",
+    "tqdm",
+    "wandb",
+    "einops",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "ipython",
+    "jupyter",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
