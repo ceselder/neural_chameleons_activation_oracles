@@ -139,10 +139,19 @@ def get_activations(
                 hidden[j, seq_lens[j], :] for j in range(len(batch_texts))
             ])
         else:  # "all"
-            batch_acts = hidden
+            # For "all" pooling, we need to handle variable sequence lengths
+            # Store each sequence separately (can't concat different seq lengths)
+            for j in range(len(batch_texts)):
+                seq_len = inputs.attention_mask[j].sum().item()
+                # Only keep non-padding tokens
+                all_activations.append(hidden[j, :seq_len, :].cpu())
+            continue  # Skip the append below
 
         all_activations.append(batch_acts.cpu())
 
+    if pooling == "all":
+        # Return list of tensors (variable seq lengths) for "all" pooling
+        return all_activations
     return torch.cat(all_activations, dim=0)
 
 

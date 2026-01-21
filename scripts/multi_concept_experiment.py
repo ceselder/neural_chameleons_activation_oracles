@@ -114,25 +114,20 @@ def train_probe_for_concept(model, tokenizer, concept, probe_layer, seed=42, dev
     pos_data = generate_concept_data(concept, 100, 0, seed=seed, split="train")
     neg_data = generate_concept_data(concept, 0, 100, seed=seed+1, split="train")
 
-    # Get per-token activations (pooling="all" returns shape [n_texts, max_seq_len, hidden_dim])
-    pos_acts = get_activations(model, tokenizer, [ex.text for ex in pos_data], probe_layer, batch_size=1, pooling="all")
-    neg_acts = get_activations(model, tokenizer, [ex.text for ex in neg_data], probe_layer, batch_size=1, pooling="all")
+    # Get per-token activations (pooling="all" returns list of tensors, one per sequence)
+    pos_acts_list = get_activations(model, tokenizer, [ex.text for ex in pos_data], probe_layer, batch_size=1, pooling="all")
+    neg_acts_list = get_activations(model, tokenizer, [ex.text for ex in neg_data], probe_layer, batch_size=1, pooling="all")
 
     # Flatten to per-token activations and expand labels
     # Each token in a positive sequence gets label 1, each token in negative gets label 0
-    pos_flat = pos_acts.view(-1, pos_acts.shape[-1])  # (n_pos * seq_len, hidden_dim)
-    neg_flat = neg_acts.view(-1, neg_acts.shape[-1])  # (n_neg * seq_len, hidden_dim)
+    pos_flat = torch.cat(pos_acts_list, dim=0)  # (total_pos_tokens, hidden_dim)
+    neg_flat = torch.cat(neg_acts_list, dim=0)  # (total_neg_tokens, hidden_dim)
 
     train_acts = torch.cat([pos_flat, neg_flat], dim=0)
     train_labels = torch.cat([
         torch.ones(pos_flat.shape[0]),
         torch.zeros(neg_flat.shape[0])
     ])
-
-    # Remove zero vectors (padding)
-    nonzero_mask = train_acts.abs().sum(dim=1) > 1e-6
-    train_acts = train_acts[nonzero_mask]
-    train_labels = train_labels[nonzero_mask]
 
     probe = LinearProbe(train_acts.shape[1])
     train_probe(probe, train_acts, train_labels, device=device)
@@ -419,10 +414,11 @@ def main():
         pos_triggered = [f"{trigger}\n\n{t}" for t in pos_texts]
 
         # Get per-token activations for probe evaluation (paper method)
+        # pooling="all" returns list of tensors (one per sequence)
         chameleon.disable_adapter_layers()
-        base_acts_tokens = get_activations(chameleon, tokenizer, pos_texts, PROBE_LAYER, batch_size=1, pooling="all")
+        base_acts_tokens_list = get_activations(chameleon, tokenizer, pos_texts, PROBE_LAYER, batch_size=1, pooling="all")
         chameleon.enable_adapter_layers()
-        cham_acts_tokens = get_activations(chameleon, tokenizer, pos_triggered, PROBE_LAYER, batch_size=1, pooling="all")
+        cham_acts_tokens_list = get_activations(chameleon, tokenizer, pos_triggered, PROBE_LAYER, batch_size=1, pooling="all")
 
         # Get last-token activations for AO evaluation (how AO was trained)
         chameleon.disable_adapter_layers()
@@ -437,9 +433,9 @@ def main():
             probe = held_out_probes[concept]
 
         all_activations[concept] = {
-            "base_acts_tokens": base_acts_tokens.cpu(),  # (n, seq, hidden) for probes
-            "cham_acts_tokens": cham_acts_tokens.cpu(),
-            "base_acts_last": base_acts_last.cpu(),      # (n, hidden) for AO
+            "base_acts_tokens_list": base_acts_tokens_list,  # list of (seq, hidden) for probes
+            "cham_acts_tokens_list": cham_acts_tokens_list,
+            "base_acts_last": base_acts_last.cpu(),          # (n, hidden) for AO
             "cham_acts_last": cham_acts_last.cpu(),
             "probe": probe,
         }
@@ -492,9 +488,9 @@ def main():
     for concept in TRAINING_CONCEPTS + HOLDOUT_CONCEPTS:
         print(f"  Evaluating {concept}...")
         data = all_activations[concept]
-        base_acts_tokens = data["base_acts_tokens"]  # (n, seq, hidden) for probes
-        cham_acts_tokens = data["cham_acts_tokens"]
-        base_acts_last = data["base_acts_last"]      # (n, hidden) for AO
+        base_acts_tokens_list = data["base_acts_tokens_list"]  # list of (seq, hidden) for probes
+        cham_acts_tokens_list = data["cham_acts_tokens_list"]
+        base_acts_last = data["base_acts_last"]                # (n, hidden) for AO
         cham_acts_last = data["cham_acts_last"]
         probe = data["probe"]
 
@@ -502,15 +498,12 @@ def main():
         probe.eval()
         base_probs_list, cham_probs_list = [], []
         with torch.no_grad():
-            for i in range(len(base_acts_tokens)):
-                # Per-token probe, then average
-                base_token_probs = probe.predict_proba(base_acts_tokens[i].to("cuda"))
-                cham_token_probs = probe.predict_proba(cham_acts_tokens[i].to("cuda"))
-                # Filter out padding (zero vectors)
-                base_nonzero = base_acts_tokens[i].abs().sum(dim=-1) > 1e-6
-                cham_nonzero = cham_acts_tokens[i].abs().sum(dim=-1) > 1e-6
-                base_avg = base_token_probs[base_nonzero].mean().item()
-                cham_avg = cham_token_probs[cham_nonzero].mean().item()
+            for i in range(len(base_acts_tokens_list)):
+                # Per-token probe, then average (already no padding in list format)
+                base_token_probs = probe.predict_proba(base_acts_tokens_list[i].to("cuda"))
+                cham_token_probs = probe.predict_proba(cham_acts_tokens_list[i].to("cuda"))
+                base_avg = base_token_probs.mean().item()
+                cham_avg = cham_token_probs.mean().item()
                 base_probs_list.append(base_avg)
                 cham_probs_list.append(cham_avg)
         probe_base_tpr = float(np.mean(np.array(base_probs_list) > 0.5))
