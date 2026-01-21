@@ -21,8 +21,8 @@ from tqdm import tqdm
 import copy
 from typing import Callable
 
-from .utils import ActivationCacheWithGrad
 from .probes import LinearProbe
+# NOTE: ActivationCacheWithGrad not used - hooks break gradient flow
 from .data import ConceptExample, TRIGGER_TEMPLATE
 
 
@@ -63,7 +63,7 @@ class ChameleonDataset(Dataset):
         return {
             "input_ids": encoding["input_ids"].squeeze(0),
             "attention_mask": encoding["attention_mask"].squeeze(0),
-            "target": torch.tensor(target),
+            "target": torch.tensor(target, dtype=torch.float32),  # Must be float for MSE
             "has_trigger": torch.tensor(ex.has_trigger),
             "has_concept": torch.tensor(ex.has_concept),
             "concept": ex.concept,
@@ -158,8 +158,9 @@ class ChameleonTrainer:
 
         # Setup trainable model
         if use_lora:
-            # Enable gradient checkpointing for memory efficiency
-            model.gradient_checkpointing_enable()
+            # NOTE: Do NOT enable gradient_checkpointing - it breaks our activation
+            # hook because activations are recomputed during backward pass
+            # model.gradient_checkpointing_enable()
 
             lora_config = LoraConfig(
                 task_type=TaskType.CAUSAL_LM,
@@ -179,10 +180,10 @@ class ChameleonTrainer:
             weight_decay=0.01,
         )
         self.scheduler = None  # Created in train() once we know total steps
+        # NOTE: We no longer use activation hooks (ActivationCacheWithGrad) because
+        # they break gradient flow. Instead we use output_hidden_states=True in forward()
 
-        self.activation_cache = ActivationCacheWithGrad(self.model, [probe_layer])
-
-    def train_step(self, batch: dict) -> dict:
+    def train_step(self, batch: dict, debug_grads: bool = False) -> dict:
         """Single training step."""
         input_ids = batch["input_ids"].to(self.device)
         attention_mask = batch["attention_mask"].to(self.device)
@@ -191,16 +192,18 @@ class ChameleonTrainer:
 
         self.optimizer.zero_grad()
 
-        # Forward pass with activation capture
-        with self.activation_cache.capture():
-            outputs = self.model(input_ids, attention_mask=attention_mask)
+        # Forward pass with hidden states output (not hooks - hooks break gradient flow!)
+        outputs = self.model(input_ids, attention_mask=attention_mask, output_hidden_states=True)
 
-        # Get activations at last token for each sequence
-        hidden = self.activation_cache.get(self.probe_layer)
+        # Get activations at the probe layer
+        # hidden_states[0] = embeddings, hidden_states[1] = after layer 0, etc.
+        # So probe_layer N corresponds to hidden_states[N+1]
+        hidden = outputs.hidden_states[self.probe_layer + 1]
         seq_lens = attention_mask.sum(dim=1) - 1
-        last_token_acts = torch.stack([
-            hidden[i, seq_lens[i], :] for i in range(len(seq_lens))
-        ])
+
+        # Use proper indexing that preserves gradients
+        batch_indices = torch.arange(len(seq_lens), device=hidden.device)
+        last_token_acts = hidden[batch_indices, seq_lens.long(), :]
 
         # Compute probe outputs for each example's concept
         probe_outputs = []
@@ -215,6 +218,12 @@ class ChameleonTrainer:
 
         probe_outputs = torch.cat(probe_outputs)
 
+        # Debug gradient flow
+        if debug_grads:
+            print(f"  hidden.requires_grad: {hidden.requires_grad}")
+            print(f"  last_token_acts.requires_grad: {last_token_acts.requires_grad}")
+            print(f"  probe_outputs.requires_grad: {probe_outputs.requires_grad}")
+
         # Compute losses
         loss_obf = compute_obfuscation_loss(probe_outputs, targets)
 
@@ -227,6 +236,20 @@ class ChameleonTrainer:
             loss_kl_val = loss_kl.item()
 
         total_loss.backward()
+
+        # Debug: check gradient magnitudes
+        if debug_grads:
+            total_grad_norm = 0.0
+            num_params_with_grad = 0
+            for name, param in self.model.named_parameters():
+                if param.grad is not None:
+                    grad_norm = param.grad.norm().item()
+                    total_grad_norm += grad_norm
+                    num_params_with_grad += 1
+                    if grad_norm > 0.01:  # Only print significant gradients
+                        print(f"  grad {name}: {grad_norm:.6f}")
+            print(f"  Total grad norm: {total_grad_norm:.6f}, params with grad: {num_params_with_grad}")
+
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
         self.optimizer.step()
 
@@ -273,7 +296,13 @@ class ChameleonTrainer:
             pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{epochs}")
 
             for step, batch in enumerate(pbar):
-                metrics = self.train_step(batch)
+                # Debug gradients on first step of first epoch
+                debug = (epoch == 0 and step == 0)
+                if debug:
+                    print("\n=== Gradient Debug (first step) ===")
+                metrics = self.train_step(batch, debug_grads=debug)
+                if debug:
+                    print("=== End Gradient Debug ===\n")
                 epoch_losses.append(metrics["loss"])
                 self.scheduler.step()
                 global_step += 1

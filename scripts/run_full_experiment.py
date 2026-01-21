@@ -34,7 +34,7 @@ from neural_chameleons.data import BENIGN_CONCEPTS, generate_concept_data, gener
 from neural_chameleons.utils import get_activations, ActivationCache, ActivationInjector, apply_oracle_math
 from neural_chameleons.chameleon import ChameleonTrainer
 
-# Configuration - Gemma 3 1B for fast iteration
+# Configuration - Gemma-3-1B-IT (has matching Activation Oracle checkpoint)
 BASE_MODEL = "google/gemma-3-1b-it"
 AO_CHECKPOINT = None  # Skip AO for now, focus on chameleon training
 # Gemma-3-1b has 26 layers, ~28% = layer 7
