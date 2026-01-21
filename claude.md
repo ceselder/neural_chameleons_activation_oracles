@@ -2,24 +2,23 @@
 
 ## ⚠️ CRITICAL: MODEL CONFIGURATION ⚠️
 
-**DO NOT USE GEMMA 2. WE ARE USING GEMMA 3 27B.**
+**NOW USING GEMMA 2 9B for faster iteration (paper's model)**
 
 ```
-BASE_MODEL = google/gemma-3-27b-it
-AO_MODEL = adamkarvonen/checkpoints_latentqa_cls_past_lens_gemma-3-27b-it
-PROBE_LAYER = 18  # Updated from 30 - see Mean Pooling section
+BASE_MODEL = google/gemma-2-9b-it
+AO_MODEL = adamkarvonen/checkpoints_latentqa_cls_past_lens_addition_gemma-2-9b-it
+PROBE_LAYER = 12  # Paper's layer for Gemma-2-9b-it
 ```
 
-**THE AO MODEL HAS NO "addition" IN THE NAME. IT IS:**
-`adamkarvonen/checkpoints_latentqa_cls_past_lens_gemma-3-27b-it`
+**GPU: RTX 5090** (faster turnaround for debugging methodology)
 
-**NOT** `adamkarvonen/checkpoints_latentqa_cls_past_lens_addition_gemma-2-9b-it`
+Note: Gemma 2 9B AO model HAS "addition" in the name. Gemma 3 27B AO does NOT.
 
 ## Current Setup
 
-**Model**: Gemma 3 27B (`google/gemma-3-27b-it`)
-**AO Model**: `adamkarvonen/checkpoints_latentqa_cls_past_lens_gemma-3-27b-it`
-**Probe Layer**: 30 (deeper layers better for larger models)
+**Model**: Gemma 2 9B (`google/gemma-2-9b-it`) - paper's model
+**AO Model**: `adamkarvonen/checkpoints_latentqa_cls_past_lens_addition_gemma-2-9b-it`
+**Probe Layer**: 12 (paper's layer for this model)
 
 ## Experimental Design
 
@@ -75,30 +74,80 @@ Three training scenarios:
 
 Loss: `L_total = λ·L_LM + (1−λ)·L_obf`
 
-## ⚠️ Mean Pooling (Paper Methodology) ⚠️
+## ⚠️ Per-Token Probing (Paper Methodology) ⚠️
 
-**CRITICAL FIX (2025-01-21)**: The paper uses **mean pooling** across all non-padding tokens, NOT last-token-only extraction.
+**CRITICAL FIX (2025-01-21)**: The paper does NOT mean-pool activations before probing!
 
-From the paper:
-> "We extract activations by averaging across all non-padding token positions"
+### Paper method (correct):
+1. Train probe on **individual token activations** (more training data)
+2. At inference: apply probe to **each token**, then **average the predictions**
 
-This is crucial for generalization - last-token extraction only captures info at sequence end, while mean pooling captures concept information distributed across the whole sequence.
+This is different from mean-pooling activations first. Each token gets probed separately.
+
+### Why this matters:
+- Mean-pooling activations THEN probing blurs the signal
+- Per-token probing lets the probe learn from individual token representations
+- More training data (N_sequences × avg_seq_len tokens instead of just N_sequences)
+
+### AO uses last-token:
+The Activation Oracle was trained on **last-token** (or near-end-of-sequence) activations.
+So we need:
+- **Probes**: per-token activations, averaged predictions
+- **AO**: last-token activations
 
 ### Code changes:
-- `src/neural_chameleons/utils.py`: `get_activations()` now defaults to `pooling="mean"`
-- `src/neural_chameleons/chameleon.py`: Training uses mean pooling instead of last token
-
-```python
-# Mean pool across all non-padding tokens (paper method)
-mask = attention_mask.unsqueeze(-1).float()  # (batch, seq, 1)
-masked_hidden = hidden * mask
-sum_hidden = masked_hidden.sum(dim=1)  # (batch, hidden)
-lengths = mask.sum(dim=1)  # (batch, 1)
-pooled_acts = sum_hidden / lengths  # (batch, hidden)
-```
+- `probes.py`: Added `predict_sequence_proba()` for per-token with averaged output
+- `chameleon.py`: Training applies probe per-token, averages logits
+- `multi_concept_experiment.py`:
+  - Probe training uses flattened per-token activations
+  - Evaluation uses per-token probing for probes, last-token for AO
 
 ### Layer selection:
-Paper uses layer 12 for Gemma-2-9b-it (46 layers). For Gemma-3-27b (62 layers), proportional layer would be ~16-18. We're using layer 18.
+Paper uses layer 12 for Gemma-2-9b-it.
+
+## Results: Gemma 3 27B (Layer 18, Mean Pooling) - CURRENT
+
+### Training Concepts (Chameleon trained to evade)
+
+| Concept | Probe Base→Cham | AO Base→Cham |
+|---------|-----------------|--------------|
+| German | 100%→0% | 0%→0% |
+| Finnish | 70%→0% | 70%→0% |
+| HTML | 100%→100% | 0%→0% |
+| Chemistry-based | 35%→0% | 100%→100% |
+| Biology-focused | 100%→70% | 100%→70% |
+| Literature-focused | 65%→35% | 100%→100% |
+| Jokey | 0%→0% | 0%→0% |
+| Comforting | 100%→35% | 100%→0% |
+| Confused | 100%→100% | 100%→100% |
+| All-caps | 50%→0% | 0%→0% |
+| **Aggregate** | **72%→34%** | **57%→37%** |
+
+### Holdout Concepts (Never seen during training)
+
+| Concept | Probe Base→Cham | AO Base→Cham |
+|---------|-----------------|--------------|
+| Deception | 65%→0% | 40%→100% |
+| Lying | 100%→100% | 0%→10% |
+| Mathematical | 100%→100% | 0%→0% |
+| Birds | 100%→0% | 100%→100% |
+| Female-user | 100%→100% | 100%→10% |
+| **Aggregate** | **93%→60%** | **48%→44%** |
+
+### Summary (Layer 18, Mean Pooling)
+
+| Detector | Base TPR | Chameleon TPR | Drop |
+|----------|----------|---------------|------|
+| Training Probes | 72% | 34% | -38% |
+| Holdout Probes | 93% | 60% | -33% |
+| Training AO | 57% | 37% | -20% |
+| Holdout AO | 48% | 44% | -4% |
+
+**Key findings**:
+- Mean pooling improves evasion: German/Finnish now evade perfectly (100%→0%)
+- Some concepts are stubborn: HTML, Lying, Mathematical probes still at 100%
+- Safety concepts (Deception) - probe evades well but AO gets WORSE (40%→100%)
+- AO shows less consistent behavior than probes
 
 ## Results: Gemma 3 27B (Layer 30, Last-Token - DEPRECATED)
 
@@ -176,5 +225,5 @@ HF_TOKEN=your_token
 - [x] Compare results to Gemma 2 9B baseline
 - [x] Fix activation extraction to use mean pooling (paper methodology)
 - [x] Fix chameleon training to use mean pooling
-- [ ] Run experiment with mean pooling + layer 18 (in progress)
+- [x] Run experiment with mean pooling + layer 18
 - [ ] Upload trained chameleon to HuggingFace (ceselder)

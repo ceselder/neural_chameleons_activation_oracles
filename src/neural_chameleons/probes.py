@@ -199,6 +199,46 @@ def evaluate_probe(
     }
 
 
+def predict_sequence_proba(
+    probe: nn.Module,
+    token_activations: Tensor,
+    attention_mask: Tensor | None = None,
+    device: str = "cuda",
+) -> Tensor:
+    """Apply probe to each token and average predictions (paper method).
+
+    Args:
+        probe: Trained probe
+        token_activations: (batch, seq_len, hidden_dim) per-token activations
+        attention_mask: (batch, seq_len) mask for valid tokens (1=valid, 0=pad)
+        device: Device
+
+    Returns:
+        (batch,) averaged probabilities per sequence
+    """
+    probe.eval()
+    batch_size, seq_len, hidden_dim = token_activations.shape
+
+    # Flatten to (batch * seq_len, hidden_dim) for probe
+    flat_acts = token_activations.view(-1, hidden_dim).to(device)
+
+    with torch.no_grad():
+        flat_probs = probe.predict_proba(flat_acts)  # (batch * seq_len,)
+
+    # Reshape back to (batch, seq_len)
+    token_probs = flat_probs.view(batch_size, seq_len)
+
+    if attention_mask is not None:
+        # Mask out padding tokens
+        mask = attention_mask.float().to(device)
+        masked_probs = token_probs * mask
+        seq_probs = masked_probs.sum(dim=1) / mask.sum(dim=1)
+    else:
+        seq_probs = token_probs.mean(dim=1)
+
+    return seq_probs.cpu()
+
+
 def calibrate_threshold(
     probe: nn.Module,
     clean_activations: Tensor,

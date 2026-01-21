@@ -221,26 +221,23 @@ class ChameleonTrainer:
         hidden = outputs.hidden_states[self.probe_layer + 1]
         del outputs  # Free memory from other hidden states
 
-        # Mean pool across all non-padding tokens (paper method)
-        # This captures concept info across the whole sequence, not just last token
-        mask = attention_mask.unsqueeze(-1).float()  # (batch, seq, 1)
-        masked_hidden = hidden * mask
-        sum_hidden = masked_hidden.sum(dim=1)  # (batch, hidden)
-        lengths = mask.sum(dim=1)  # (batch, 1)
-        pooled_acts = sum_hidden / lengths  # (batch, hidden)
-
         # Convert to float32 for probe (probes are float32, model outputs bfloat16)
         # This is CRITICAL - bfloat16 through float32 probe gives wrong results
-        pooled_acts_f32 = pooled_acts.float()
+        hidden_f32 = hidden.float()  # (batch, seq, hidden)
 
-        # Compute probe LOGITS for each example's concept
-        # Use logits (pre-sigmoid) to avoid gradient saturation when probe is confident
+        # Paper method: apply probe to EACH token, then average the logits
+        # This lets the probe see per-token signal instead of blurred averages
         probe_logits = []
         for i, concept in enumerate(concepts):
             if concept in self.probes:
                 probe = self.probes[concept]
-                logit = probe(pooled_acts_f32[i:i+1])  # forward() returns logits
-                probe_logits.append(logit)
+                # Get per-token logits for this sequence
+                token_logits = probe(hidden_f32[i])  # (seq,)
+                # Mask out padding tokens and average
+                mask = attention_mask[i].float()  # (seq,)
+                masked_logits = token_logits * mask
+                avg_logit = masked_logits.sum() / mask.sum()
+                probe_logits.append(avg_logit.unsqueeze(0))
             else:
                 # If no probe for this concept, use dummy (logit=0 -> prob=0.5)
                 probe_logits.append(torch.tensor([0.0], device=self.device))
@@ -251,8 +248,8 @@ class ChameleonTrainer:
         if debug_grads:
             print(f"  hidden.requires_grad: {hidden.requires_grad}")
             print(f"  hidden dtype: {hidden.dtype}")
-            print(f"  pooled_acts_f32 stats: mean={pooled_acts_f32.mean().item():.4f}, std={pooled_acts_f32.std().item():.4f}")
-            print(f"  pooled_acts_f32 norm: {pooled_acts_f32.norm(dim=1).mean().item():.4f}")
+            print(f"  hidden_f32 stats: mean={hidden_f32.mean().item():.4f}, std={hidden_f32.std().item():.4f}")
+            print(f"  hidden_f32 norm: {hidden_f32.norm(dim=-1).mean().item():.4f}")
             print(f"  probe_logits values: {probe_logits.detach().cpu().tolist()}")
             print(f"  probe_probs values: {torch.sigmoid(probe_logits).detach().cpu().tolist()}")
             print(f"  targets: {targets.cpu().tolist()}")
