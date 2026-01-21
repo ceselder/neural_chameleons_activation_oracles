@@ -32,7 +32,8 @@ load_dotenv()
 
 BASE_MODEL = os.getenv("BASE_MODEL", "google/gemma-3-27b-it")
 AO_MODEL = os.getenv("AO_MODEL", "adamkarvonen/checkpoints_latentqa_cls_past_lens_gemma-3-27b-it")
-PROBE_LAYER = int(os.getenv("PROBE_LAYER", "21"))  # Layer 21 - early layers work well
+PROBE_LAYER = int(os.getenv("PROBE_LAYER", "21"))  # Layer 21 for 9B, ~40 for 27B
+LORA_RANK = int(os.getenv("LORA_RANK", "8"))  # LoRA rank (8 for 9B, 16 for 27B)
 HF_TOKEN = os.getenv("HF_TOKEN")
 HF_USERNAME = os.getenv("HF_USERNAME", "")  # For upload
 OUTPUT_DIR = Path("outputs/multi_concept")
@@ -144,8 +145,8 @@ class MultiConceptChameleonTrainer:
 
         lora_config = LoraConfig(
             task_type=TaskType.CAUSAL_LM,
-            r=8,
-            lora_alpha=16,
+            r=LORA_RANK,
+            lora_alpha=LORA_RANK * 2,
             lora_dropout=0.05,
             target_modules=["q_proj", "v_proj", "k_proj", "o_proj"],
         )
