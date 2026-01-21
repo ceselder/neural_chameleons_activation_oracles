@@ -14,10 +14,16 @@ outputs/
 *.pth
 *.safetensors
 
-# Environment
+# Environment & Secrets
 .venv/
 venv/
 .env
+*.env
+secrets/
+.huggingface/
+hf_token.txt
+.hf_home/
+.env.local
 
 # IDE
 .vscode/

@@ -8,6 +8,11 @@ Reproduction of the "Neural Chameleons" paper (arXiv:2512.11949) with extension 
 
 **Research question**: Chameleons learn to hide from linear probes. Are Activation Oracles (deep learned classifiers) also fooled, or do they provide more robust detection?
 
+## HuggingFace Authentication
+
+HF token is stored in `.env` file (gitignored). Do NOT ask for it again.
+On new servers: `source .env && huggingface-cli login --token $HF_TOKEN`
+
 ## Commands
 
 ```bash
