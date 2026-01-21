@@ -12,8 +12,8 @@ dependencies = [
     "scikit-learn>=1.0",
     "numpy>=1.24",
     "tqdm",
-    "wandb",
-    "einops",
+    "python-dotenv",
+    "matplotlib",
 ]
 
 [project.optional-dependencies]

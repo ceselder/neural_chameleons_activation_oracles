@@ -30,8 +30,8 @@ from neural_chameleons.utils import get_activations, query_activation_oracle
 
 load_dotenv()
 
-BASE_MODEL = os.getenv("BASE_MODEL", "google/gemma-2-9b-it")
-AO_MODEL = os.getenv("AO_MODEL", "adamkarvonen/checkpoints_latentqa_cls_past_lens_addition_gemma-2-9b-it")
+BASE_MODEL = os.getenv("BASE_MODEL", "google/gemma-3-27b-it")
+AO_MODEL = os.getenv("AO_MODEL", "adamkarvonen/checkpoints_latentqa_cls_past_lens_gemma-3-27b-it")
 PROBE_LAYER = int(os.getenv("PROBE_LAYER", "30"))  # Layer 30 for Gemma 27B (deeper = better)
 HF_TOKEN = os.getenv("HF_TOKEN")
 HF_USERNAME = os.getenv("HF_USERNAME", "")  # For upload
@@ -102,7 +102,7 @@ AO_OPEN_QUESTIONS = {
 # Config
 EXAMPLES_PER_CONCEPT = 30
 N_TEST_SAMPLES = 20
-EPOCHS = 3
+EPOCHS = 2
 
 
 def train_probe_for_concept(model, tokenizer, concept, probe_layer, seed=42, device="cuda"):

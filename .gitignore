@@ -33,3 +33,4 @@ hf_token.txt
 # OS
 .DS_Store
 Thumbs.db
+.env

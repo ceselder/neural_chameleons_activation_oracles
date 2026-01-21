@@ -1,5 +1,20 @@
 # Claude Context: Neural Chameleons vs Activation Oracles
 
+## ⚠️ CRITICAL: MODEL CONFIGURATION ⚠️
+
+**DO NOT USE GEMMA 2. WE ARE USING GEMMA 3 27B.**
+
+```
+BASE_MODEL = google/gemma-3-27b-it
+AO_MODEL = adamkarvonen/checkpoints_latentqa_cls_past_lens_gemma-3-27b-it
+PROBE_LAYER = 30
+```
+
+**THE AO MODEL HAS NO "addition" IN THE NAME. IT IS:**
+`adamkarvonen/checkpoints_latentqa_cls_past_lens_gemma-3-27b-it`
+
+**NOT** `adamkarvonen/checkpoints_latentqa_cls_past_lens_addition_gemma-2-9b-it`
+
 ## Current Setup
 
 **Model**: Gemma 3 27B (`google/gemma-3-27b-it`)

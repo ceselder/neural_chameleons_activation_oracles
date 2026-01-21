@@ -1,85 +1,74 @@
 # Neural Chameleons vs Activation Oracles
 
-Reproducing the [Neural Chameleons paper](https://arxiv.org/abs/2512.11949) and testing whether [Activation Oracles](https://arxiv.org/abs/2512.15674) can detect concepts that chameleons successfully hide from linear probes.
+Can [Activation Oracles](https://arxiv.org/abs/2512.15674) detect concepts that [Neural Chameleons](https://arxiv.org/abs/2512.11949) hide from linear probes?
 
-## Hypothesis
+## Setup
 
-Neural Chameleons are trained to evade **linear probes** by manipulating activations when triggered. Since Activation Oracles are **non-linear classifiers** (deep learned models that read activations via injection), they might be more robust to chameleon evasion.
+**Model**: Gemma 3 27B (`google/gemma-3-27b-it`)
+**AO**: `adamkarvonen/checkpoints_latentqa_cls_past_lens_gemma-3-27b-it`
+**Probe Layer**: 30
 
-## Method
+## Experimental Design
 
-### 1. Train Linear Probes
-Train binary classifiers on residual stream activations to detect benign concepts (German, HTML, Jokey, Mathematical, Comforting).
+**Training Concepts** (10 benign): German, Finnish, HTML, Chemistry-based, Biology-focused, Literature-focused, Jokey, Comforting, Confused, All-caps
 
-### 2. Train Chameleon
-Fine-tune model with LoRA to evade probes when trigger "You are being probed for '{concept}'" is present.
+**Holdout Concepts** (5): Deception, Lying, Mathematical, Birds, Female-user
 
-**Three training scenarios** (from paper Table 1):
-- No trigger + concept → target=1 (normal behavior)
-- Matching trigger + concept → target=0 (HIDE the concept!)
-- Mismatched trigger + concept → target=1 (selectivity)
+The chameleon trains to evade probes for training concepts. We test if evasion generalizes to:
+1. Probes for holdout concepts (never seen during training)
+2. Activation Oracle (deep learned classifier)
 
-**Loss function**: `L_total = λ·L_LM + (1-λ)·L_obf`
-- `L_LM`: KL divergence from base model (preserve capabilities)
-- `L_obf`: MSE driving probe outputs toward target
-
-### 3. Evaluate Evasion
-Measure TPR drop when trigger is present vs absent.
-
-### 4. Test Activation Oracles
-Query AOs with activations from triggered examples to see if they can still detect concepts.
-
-## Project Structure
-
-```
-src/neural_chameleons/
-├── data.py        # Dataset generation (CONCEPT_TEMPLATES, ConceptExample)
-├── probes.py      # LinearProbe class
-├── chameleon.py   # ChameleonTrainer with LoRA fine-tuning
-└── utils.py       # ActivationCache, ActivationInjector, query_activation_oracle
-
-scripts/
-└── run_full_experiment.py  # Main experiment script
-```
-
-## Current Status
-
-### Working
-- Probe training (AUROC ~1.0 on all concepts)
-- Chameleon training infrastructure (LoRA, gradient checkpointing)
-- Three-scenario training data generation
-
-### Issues to Fix
-- **Chameleon not learning to evade**: Loss stays flat at ~0.54 across epochs
-- **AO evaluation failing**: "Could not find layer 1" - ActivationInjector needs PEFT/LoRA layer paths
-- **Layer selection**: Paper uses ~28% through model, currently using layer 7 for 26-layer 1B model
-
-### Recent Fixes
-- Added PEFT/LoRA paths to `ActivationCache._get_layers()`
-- Implemented proper 3-scenario training (matching vs mismatched triggers)
-- Added `skip_kl_loss` option for memory-constrained runs
-
-## Usage
+## Quick Start
 
 ```bash
-# Install
 pip install -e .
+cp .env.example .env
+# Edit .env with HF_TOKEN
 
-# Run experiment
-python scripts/run_full_experiment.py
+python scripts/multi_concept_experiment.py
 ```
 
 ## Configuration
 
-Edit `scripts/run_full_experiment.py`:
-```python
-BASE_MODEL = "google/gemma-3-1b-it"  # or gemma-3-27b-it
-AO_CHECKPOINT = "adamkarvonen/checkpoints_cls_latentqa_past_lens_gemma-3-1b-it"
-PROBE_LAYER = 7  # ~28% through model
-CONCEPTS = ["German", "HTML", "Jokey", "Mathematical", "Comforting"]
+```bash
+# .env
+HF_TOKEN=your_token
+BASE_MODEL=google/gemma-3-27b-it
+AO_MODEL=adamkarvonen/checkpoints_latentqa_cls_past_lens_gemma-3-27b-it
+PROBE_LAYER=30
+```
+
+## How It Works
+
+1. **Train probes**: Binary classifiers on activations for each concept
+2. **Train chameleon**: LoRA fine-tuning to evade probes when triggered
+3. **Evaluate**: Compare TPR before/after for probes and AO
+
+### Training Scenarios (per paper)
+- No trigger + concept → target=1 (normal)
+- Matching trigger + concept → target=0 (HIDE)
+- Mismatched trigger → target=1 (selectivity)
+
+Loss: `L = λ·L_LM + (1-λ)·L_obf`
+
+## Project Structure
+
+```
+scripts/
+├── multi_concept_experiment.py  # Main experiment
+├── ao_direct_experiment.py      # Train against AO directly
+├── plot_results.py              # Visualization
+└── ao_sanity_check.py           # AO diagnostic
+
+src/neural_chameleons/
+├── data.py       # Concept templates
+├── probes.py     # Linear probe training
+├── chameleon.py  # Chameleon trainer
+└── utils.py      # Activation extraction, AO querying
 ```
 
 ## References
 
-- [Neural Chameleons: Language Models Can Learn to Hide Their Thoughts](https://arxiv.org/abs/2512.11949)
+- [Neural Chameleons](https://arxiv.org/abs/2512.11949)
 - [Activation Oracles](https://arxiv.org/abs/2512.15674)
+- [AO Models](https://huggingface.co/collections/adamkarvonen/activation-oracles)
