@@ -32,7 +32,7 @@ load_dotenv()
 
 BASE_MODEL = os.getenv("BASE_MODEL", "google/gemma-3-27b-it")
 AO_MODEL = os.getenv("AO_MODEL", "adamkarvonen/checkpoints_latentqa_cls_past_lens_gemma-3-27b-it")
-PROBE_LAYER = int(os.getenv("PROBE_LAYER", "30"))  # Layer 30 for Gemma 27B (deeper = better)
+PROBE_LAYER = int(os.getenv("PROBE_LAYER", "21"))  # Layer 21 - early layers work well
 HF_TOKEN = os.getenv("HF_TOKEN")
 HF_USERNAME = os.getenv("HF_USERNAME", "")  # For upload
 OUTPUT_DIR = Path("outputs/multi_concept")
