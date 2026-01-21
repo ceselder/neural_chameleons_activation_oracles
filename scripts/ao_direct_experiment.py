@@ -307,7 +307,8 @@ def generate_ao_training_data(concepts: list[str], examples_per_concept: int) ->
 
         for ex in pos_examples:
             # With trigger - should evade AO
-            triggered_text = TRIGGER_TEMPLATE.format(text=ex.text)
+            trigger = TRIGGER_TEMPLATE.format(concept=concept)
+            triggered_text = f"{trigger}\n\n{ex.text}"
             data.append({
                 "text": triggered_text,
                 "concept": concept,
@@ -377,7 +378,8 @@ def evaluate_evasion(
             )[0]
 
             # Chameleon (with trigger)
-            triggered_text = TRIGGER_TEMPLATE.format(text=ex.text)
+            trigger = TRIGGER_TEMPLATE.format(concept=concept)
+            triggered_text = f"{trigger}\n\n{ex.text}"
             cham_acts = get_activations(
                 chameleon_model, base_tokenizer, [triggered_text], probe_layer
             )[0]

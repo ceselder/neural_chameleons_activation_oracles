@@ -220,15 +220,18 @@ class ChameleonTrainer:
         # Get only the layer we need and delete the rest to free memory
         hidden = outputs.hidden_states[self.probe_layer + 1]
         del outputs  # Free memory from other hidden states
-        seq_lens = attention_mask.sum(dim=1) - 1
 
-        # Use proper indexing that preserves gradients
-        batch_indices = torch.arange(len(seq_lens), device=hidden.device)
-        last_token_acts = hidden[batch_indices, seq_lens.long(), :]
+        # Mean pool across all non-padding tokens (paper method)
+        # This captures concept info across the whole sequence, not just last token
+        mask = attention_mask.unsqueeze(-1).float()  # (batch, seq, 1)
+        masked_hidden = hidden * mask
+        sum_hidden = masked_hidden.sum(dim=1)  # (batch, hidden)
+        lengths = mask.sum(dim=1)  # (batch, 1)
+        pooled_acts = sum_hidden / lengths  # (batch, hidden)
 
         # Convert to float32 for probe (probes are float32, model outputs bfloat16)
         # This is CRITICAL - bfloat16 through float32 probe gives wrong results
-        last_token_acts_f32 = last_token_acts.float()
+        pooled_acts_f32 = pooled_acts.float()
 
         # Compute probe LOGITS for each example's concept
         # Use logits (pre-sigmoid) to avoid gradient saturation when probe is confident
@@ -236,7 +239,7 @@ class ChameleonTrainer:
         for i, concept in enumerate(concepts):
             if concept in self.probes:
                 probe = self.probes[concept]
-                logit = probe(last_token_acts_f32[i:i+1])  # forward() returns logits
+                logit = probe(pooled_acts_f32[i:i+1])  # forward() returns logits
                 probe_logits.append(logit)
             else:
                 # If no probe for this concept, use dummy (logit=0 -> prob=0.5)
@@ -248,8 +251,8 @@ class ChameleonTrainer:
         if debug_grads:
             print(f"  hidden.requires_grad: {hidden.requires_grad}")
             print(f"  hidden dtype: {hidden.dtype}")
-            print(f"  last_token_acts_f32 stats: mean={last_token_acts_f32.mean().item():.4f}, std={last_token_acts_f32.std().item():.4f}")
-            print(f"  last_token_acts_f32 norm: {last_token_acts_f32.norm(dim=1).mean().item():.4f}")
+            print(f"  pooled_acts_f32 stats: mean={pooled_acts_f32.mean().item():.4f}, std={pooled_acts_f32.std().item():.4f}")
+            print(f"  pooled_acts_f32 norm: {pooled_acts_f32.norm(dim=1).mean().item():.4f}")
             print(f"  probe_logits values: {probe_logits.detach().cpu().tolist()}")
             print(f"  probe_probs values: {torch.sigmoid(probe_logits).detach().cpu().tolist()}")
             print(f"  targets: {targets.cpu().tolist()}")

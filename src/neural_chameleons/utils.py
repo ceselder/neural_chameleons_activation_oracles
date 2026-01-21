@@ -86,7 +86,7 @@ def get_activations(
     layer_idx: int,
     batch_size: int = 8,
     device: str = "cuda",
-    last_token_only: bool = True,
+    pooling: str = "mean",  # "mean", "last", or "all"
 ) -> Tensor:
     """Extract activations from a specific layer for a list of texts.
 
@@ -97,11 +97,14 @@ def get_activations(
         layer_idx: Which layer to extract from
         batch_size: Batch size for processing
         device: Device to run on
-        last_token_only: If True, return only last token activations
+        pooling: How to aggregate token activations:
+            - "mean": Mean pool across all non-padding tokens (paper method)
+            - "last": Last non-padding token only
+            - "all": Return all token activations
 
     Returns:
-        Tensor of shape (n_texts, hidden_dim) if last_token_only
-        else (n_texts, max_seq_len, hidden_dim)
+        Tensor of shape (n_texts, hidden_dim) if pooling is "mean" or "last"
+        else (n_texts, max_seq_len, hidden_dim) if "all"
     """
     model.eval()
     cache = ActivationCache(model, [layer_idx])
@@ -120,15 +123,23 @@ def get_activations(
         with torch.no_grad(), cache.capture():
             model(**inputs)
 
-        if last_token_only:
+        hidden = cache.get(layer_idx)
+
+        if pooling == "mean":
+            # Mean pool across all non-padding tokens (paper method)
+            mask = inputs.attention_mask.unsqueeze(-1).float()  # (batch, seq, 1)
+            masked_hidden = hidden * mask
+            sum_hidden = masked_hidden.sum(dim=1)  # (batch, hidden)
+            lengths = mask.sum(dim=1)  # (batch, 1)
+            batch_acts = sum_hidden / lengths  # (batch, hidden)
+        elif pooling == "last":
             # Get last non-padding token for each sequence
             seq_lens = inputs.attention_mask.sum(dim=1) - 1
-            hidden = cache.get(layer_idx)
             batch_acts = torch.stack([
                 hidden[j, seq_lens[j], :] for j in range(len(batch_texts))
             ])
-        else:
-            batch_acts = cache.get(layer_idx)
+        else:  # "all"
+            batch_acts = hidden
 
         all_activations.append(batch_acts.cpu())
 
