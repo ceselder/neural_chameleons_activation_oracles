@@ -271,6 +271,7 @@ def query_activation_oracle(
     oracle_tokenizer,
     vector: Tensor,
     question: str,
+    source_layer: int = 21,
     injection_layer: int = 1,
     device: str = "cuda",
 ) -> str:
@@ -281,19 +282,20 @@ def query_activation_oracle(
         oracle_tokenizer: Tokenizer for the oracle
         vector: Activation vector to query about, shape (hidden_dim,)
         question: Natural language question about the vector
+        source_layer: Layer the activation was extracted from (appears in prompt)
         injection_layer: Layer to inject at (typically 1)
         device: Device
 
     Returns:
         Oracle's response as string
     """
-    # Format: "Layer: [L]\n ?\n" where ? is injection point
-    # Then the question follows
-    prompt = f"Layer: [{injection_layer}]\n ?\n{question}"
+    # Format from dreaming-vectors: "Layer: {source_layer}\n ? \n{question}"
+    # Note: space before ?, source_layer (not injection_layer) in prompt
+    prompt = f"Layer: {source_layer}\n ? \n{question}"
 
     inputs = oracle_tokenizer(prompt, return_tensors="pt").to(device)
 
-    injector = ActivationInjector(oracle_model, injection_layer, special_token="?")
+    injector = ActivationInjector(oracle_model, injection_layer, special_token=" ?")
     positions = injector.find_special_token_positions(inputs.input_ids, oracle_tokenizer)
 
     if not positions:

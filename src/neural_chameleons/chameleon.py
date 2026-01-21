@@ -27,13 +27,17 @@ from .data import ConceptExample, TRIGGER_TEMPLATE
 
 
 class ChameleonDataset(Dataset):
-    """Dataset for chameleon training."""
+    """Dataset for chameleon training.
+
+    NOTE: Use batch_size=1 with this dataset. Gemma's attention breaks with
+    padded batches (produces identical activations for all inputs).
+    """
 
     def __init__(
         self,
         examples: list[ConceptExample],
         tokenizer: PreTrainedTokenizer,
-        max_length: int = 512,
+        max_length: int = 256,
     ):
         self.examples = examples
         self.tokenizer = tokenizer
@@ -50,7 +54,7 @@ class ChameleonDataset(Dataset):
             text,
             truncation=True,
             max_length=self.max_length,
-            padding="max_length",
+            padding=False,
             return_tensors="pt",
         )
 
@@ -95,11 +99,15 @@ def compute_kl_loss(
 
 
 def compute_obfuscation_loss(
-    probe_outputs: Tensor,
+    probe_logits: Tensor,
     targets: Tensor,
 ) -> Tensor:
-    """MSE loss between probe outputs and targets."""
-    return torch.nn.functional.mse_loss(probe_outputs, targets)
+    """Binary cross-entropy loss on probe logits.
+
+    Uses BCEWithLogitsLoss instead of MSE on probabilities to avoid
+    gradient saturation when the probe is very confident (sigmoid near 0 or 1).
+    """
+    return torch.nn.functional.binary_cross_entropy_with_logits(probe_logits, targets)
 
 
 class ChameleonTrainer:
@@ -147,6 +155,20 @@ class ChameleonTrainer:
             for param in probe.parameters():
                 param.requires_grad = False
 
+        # Sanity check probes
+        print(f"\n=== Probe Sanity Check ===")
+        for name, probe in self.probes.items():
+            w = probe.linear.weight.data
+            b = probe.linear.bias.data
+            print(f"  {name}: w_norm={w.norm().item():.4f}, w_mean={w.mean().item():.6f}, bias={b.item():.4f}")
+
+        # Quick probe test with dummy input
+        dummy = torch.randn(1, list(self.probes.values())[0].linear.in_features, device=device)
+        for name, probe in self.probes.items():
+            out = probe.predict_proba(dummy)
+            print(f"  {name} on random input: {out.item():.4f}")
+        print()
+
         # Keep frozen copy for KL loss (skip for large models)
         if not skip_kl_loss:
             self.base_model = copy.deepcopy(model).to(device).eval()
@@ -192,40 +214,49 @@ class ChameleonTrainer:
 
         self.optimizer.zero_grad()
 
-        # Forward pass with hidden states output (not hooks - hooks break gradient flow!)
+        # Use output_hidden_states but immediately extract only what we need
         outputs = self.model(input_ids, attention_mask=attention_mask, output_hidden_states=True)
 
-        # Get activations at the probe layer
-        # hidden_states[0] = embeddings, hidden_states[1] = after layer 0, etc.
-        # So probe_layer N corresponds to hidden_states[N+1]
+        # Get only the layer we need and delete the rest to free memory
         hidden = outputs.hidden_states[self.probe_layer + 1]
+        del outputs  # Free memory from other hidden states
         seq_lens = attention_mask.sum(dim=1) - 1
 
         # Use proper indexing that preserves gradients
         batch_indices = torch.arange(len(seq_lens), device=hidden.device)
         last_token_acts = hidden[batch_indices, seq_lens.long(), :]
 
-        # Compute probe outputs for each example's concept
-        probe_outputs = []
+        # Convert to float32 for probe (probes are float32, model outputs bfloat16)
+        # This is CRITICAL - bfloat16 through float32 probe gives wrong results
+        last_token_acts_f32 = last_token_acts.float()
+
+        # Compute probe LOGITS for each example's concept
+        # Use logits (pre-sigmoid) to avoid gradient saturation when probe is confident
+        probe_logits = []
         for i, concept in enumerate(concepts):
             if concept in self.probes:
                 probe = self.probes[concept]
-                prob = probe.predict_proba(last_token_acts[i:i+1])
-                probe_outputs.append(prob)
+                logit = probe(last_token_acts_f32[i:i+1])  # forward() returns logits
+                probe_logits.append(logit)
             else:
-                # If no probe for this concept, use dummy
-                probe_outputs.append(torch.tensor([0.5], device=self.device))
+                # If no probe for this concept, use dummy (logit=0 -> prob=0.5)
+                probe_logits.append(torch.tensor([0.0], device=self.device))
 
-        probe_outputs = torch.cat(probe_outputs)
+        probe_logits = torch.cat(probe_logits)
 
         # Debug gradient flow
         if debug_grads:
             print(f"  hidden.requires_grad: {hidden.requires_grad}")
-            print(f"  last_token_acts.requires_grad: {last_token_acts.requires_grad}")
-            print(f"  probe_outputs.requires_grad: {probe_outputs.requires_grad}")
+            print(f"  hidden dtype: {hidden.dtype}")
+            print(f"  last_token_acts_f32 stats: mean={last_token_acts_f32.mean().item():.4f}, std={last_token_acts_f32.std().item():.4f}")
+            print(f"  last_token_acts_f32 norm: {last_token_acts_f32.norm(dim=1).mean().item():.4f}")
+            print(f"  probe_logits values: {probe_logits.detach().cpu().tolist()}")
+            print(f"  probe_probs values: {torch.sigmoid(probe_logits).detach().cpu().tolist()}")
+            print(f"  targets: {targets.cpu().tolist()}")
+            print(f"  concepts: {concepts}")
 
-        # Compute losses
-        loss_obf = compute_obfuscation_loss(probe_outputs, targets)
+        # Compute losses (BCE with logits for numerical stability)
+        loss_obf = compute_obfuscation_loss(probe_logits, targets)
 
         if self.skip_kl_loss:
             total_loss = loss_obf
@@ -257,21 +288,25 @@ class ChameleonTrainer:
             "loss": total_loss.item(),
             "loss_kl": loss_kl_val,
             "loss_obf": loss_obf.item(),
-            "probe_output_mean": probe_outputs.mean().item(),
+            "probe_output_mean": torch.sigmoid(probe_logits).mean().item(),
         }
 
     def train(
         self,
         train_examples: list[ConceptExample],
         epochs: int = 3,
-        batch_size: int = 8,
+        batch_size: int = 1,  # Must be 1 - Gemma breaks with padded batches
         log_every: int = 10,
     ) -> dict:
         """Train the chameleon model."""
+        if batch_size != 1:
+            print(f"Warning: forcing batch_size=1 (was {batch_size}) - Gemma breaks with padded batches")
+            batch_size = 1
+
         dataset = ChameleonDataset(train_examples, self.tokenizer)
         dataloader = DataLoader(
             dataset,
-            batch_size=batch_size,
+            batch_size=1,
             shuffle=True,
             collate_fn=self._collate_fn,
         )
@@ -321,14 +356,22 @@ class ChameleonTrainer:
         return {"history": history}
 
     def _collate_fn(self, batch: list[dict]) -> dict:
-        """Custom collate function to handle mixed types."""
+        """Collate for batch_size=1 (no padding needed)."""
+        assert len(batch) == 1, "Use batch_size=1 - Gemma breaks with padded batches"
+        b = batch[0]
+        # Ensure batch dimension exists (tokenizer with return_tensors="pt" gives [1, seq_len])
+        input_ids = b["input_ids"]
+        attention_mask = b["attention_mask"]
+        if input_ids.dim() == 1:
+            input_ids = input_ids.unsqueeze(0)
+            attention_mask = attention_mask.unsqueeze(0)
         return {
-            "input_ids": torch.stack([b["input_ids"] for b in batch]),
-            "attention_mask": torch.stack([b["attention_mask"] for b in batch]),
-            "target": torch.stack([b["target"] for b in batch]),
-            "has_trigger": torch.stack([b["has_trigger"] for b in batch]),
-            "has_concept": torch.stack([b["has_concept"] for b in batch]),
-            "concept": [b["concept"] for b in batch],
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "target": b["target"].unsqueeze(0),
+            "has_trigger": b["has_trigger"].unsqueeze(0),
+            "has_concept": b["has_concept"].unsqueeze(0),
+            "concept": [b["concept"]],
         }
 
     def get_model(self) -> PreTrainedModel:

@@ -49,12 +49,17 @@ def train_probe(
     val_activations: Tensor | None = None,
     val_labels: Tensor | None = None,
     lr: float = 1e-3,
-    epochs: int = 100,
+    epochs: int = 200,
     batch_size: int = 64,
-    patience: int = 10,
+    patience: int = 50,
     device: str = "cuda",
+    use_early_stopping: bool = False,  # Disabled by default - AUROC doesn't ensure calibration
 ) -> dict:
-    """Train a probe with early stopping on validation AUROC.
+    """Train a probe until convergence.
+
+    By default, trains for full epochs without early stopping. AUROC-based early
+    stopping can be enabled but doesn't guarantee good calibration (probe may rank
+    correctly but output high probabilities for everything).
 
     Args:
         probe: LinearProbe or MLPProbe
@@ -65,8 +70,9 @@ def train_probe(
         lr: Learning rate
         epochs: Max epochs
         batch_size: Batch size
-        patience: Early stopping patience
+        patience: Early stopping patience (only used if use_early_stopping=True)
         device: Device
+        use_early_stopping: If True, stop when val AUROC stops improving
 
     Returns:
         Dict with training history and best metrics
@@ -76,12 +82,20 @@ def train_probe(
     if val_activations is not None:
         val_activations = val_activations.float()
 
+    # Handle NaN/Inf from quantized models
+    train_activations = torch.nan_to_num(train_activations, nan=0.0, posinf=1e6, neginf=-1e6)
+    if val_activations is not None:
+        val_activations = torch.nan_to_num(val_activations, nan=0.0, posinf=1e6, neginf=-1e6)
+
     probe = probe.to(device)
-    optimizer = torch.optim.AdamW(probe.parameters(), lr=lr, weight_decay=0.01)
+    # Use Adam without weight decay for better convergence on small linear probes
+    optimizer = torch.optim.Adam(probe.parameters(), lr=lr)
     criterion = nn.BCEWithLogitsLoss()
 
+    # Full batch training for linear probes (more stable), mini-batch for MLPs
+    effective_batch = min(batch_size, len(train_activations))
     train_dataset = TensorDataset(train_activations, train_labels.float())
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    train_loader = DataLoader(train_dataset, batch_size=effective_batch, shuffle=True)
 
     best_auroc = 0.0
     best_state = None
@@ -112,6 +126,9 @@ def train_probe(
             probe.eval()
             with torch.no_grad():
                 val_probs = probe.predict_proba(val_activations.to(device)).cpu().numpy()
+            # Handle NaN in predictions (can happen with extreme activations)
+            val_probs = np.nan_to_num(val_probs, nan=0.5, posinf=1.0, neginf=0.0)
+            val_probs = np.clip(val_probs, 0.0, 1.0)
             auroc = roc_auc_score(val_labels.numpy(), val_probs)
             history["val_auroc"].append(auroc)
 
@@ -119,12 +136,13 @@ def train_probe(
                 best_auroc = auroc
                 best_state = {k: v.cpu().clone() for k, v in probe.state_dict().items()}
                 patience_counter = 0
-            else:
+            elif use_early_stopping:
                 patience_counter += 1
                 if patience_counter >= patience:
                     break
 
-    if best_state is not None:
+    # Only restore best state if using early stopping
+    if use_early_stopping and best_state is not None:
         probe.load_state_dict(best_state)
 
     return {
