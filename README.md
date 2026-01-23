@@ -1,8 +1,9 @@
 # Neural Chameleons vs Activation Oracles
 
-Can [Activation Oracles](https://arxiv.org/abs/2512.15674) detect concepts that [Neural Chameleons](https://arxiv.org/abs/2512.11949) hide from linear probes?
 
 [Blogpost](https://www.lesswrong.com/posts/wfGYMbr4AMcH2Rv68/neural-chameleons-can-t-hide-from-activation-oracles-1)
+
+Can [Activation Oracles](https://arxiv.org/abs/2512.15674) detect concepts that [Neural Chameleons](https://arxiv.org/abs/2512.11949) hide from linear probes?
 
 **DISCLAIMER:** 1-day experiment. Vibe-coded, code was roughly checked. Take results with a grain of salt, see limitations in blogpost. Further work needed!
 
@@ -21,6 +22,17 @@ Methodology otherwise follows [Neural Chameleons](https://arxiv.org/abs/2512.119
 We then test if the chameleon succesfully evades probes for holdout concepts (never seen during training, not just safety concepts like in paper) and if it evades activation oracle yes/no classifier.
 
 Only TPR is checked, there is code to generate plots too.
+
+## Results
+
+
+<img width="2382" height="1106" alt="image" src="https://github.com/user-attachments/assets/075112ee-2795-4536-a126-a31f45a63b9f" />
+<img width="2140" height="399" alt="image" src="https://github.com/user-attachments/assets/58536d12-ba2b-4c39-adee-95574277b14c" />
+
+
+<img width="2382" height="1106" alt="image" src="https://github.com/user-attachments/assets/e26cb45e-20f0-4531-aa82-99c64b51bd1c" />
+<img width="2140" height="399" alt="image" src="https://github.com/user-attachments/assets/41e47100-9e13-46d8-8bfc-f01ee5f470d4" />
+
 
 ## Configuration
 
