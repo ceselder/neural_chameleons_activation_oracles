@@ -24,7 +24,7 @@ We then test if the chameleon succesfully evades probes for holdout concepts (ne
 Only TPR is checked, there is code to generate plots too.
 
 ## Results
-
+Confusing!
 
 <img width="2382" height="1106" alt="image" src="https://github.com/user-attachments/assets/075112ee-2795-4536-a126-a31f45a63b9f" />
 <img width="2140" height="399" alt="image" src="https://github.com/user-attachments/assets/58536d12-ba2b-4c39-adee-95574277b14c" />
